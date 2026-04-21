@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import './App.css'
+import { supabase } from '../supabaseClient'
 
 const defaultFoods = [
   { id: 1, name: 'Oats', carbs: 27, fat: 3, protein: 5, image: '🥣' },
@@ -19,15 +20,73 @@ function App() {
   const [quickFoods, setQuickFoods] = useState(defaultFoods)
   const [showAddModal, setShowAddModal] = useState(false)
   const [newFood, setNewFood] = useState({ name: '', carbs: '', fat: '', protein: '', image: '🍽️' })
+  const [loading, setLoading] = useState(true)
 
   const maintenanceCalories = 1800
   const currentCalories = (intake.carbs * 4) + (intake.fat * 9) + (intake.protein * 4)
   const progressPercent = Math.min((currentCalories / maintenanceCalories) * 100, 100)
 
+  // Load foods from Supabase and today's intake
   useEffect(() => {
+    const loadData = async () => {
+      try {
+        // Fetch foods
+        const { data: foods, error: foodsError } = await supabase
+          .from('foods')
+          .select('*')
+          .order('name')
+
+        if (!foodsError && foods) {
+          setQuickFoods(foods)
+        }
+
+        // Fetch today's intake
+        const today = new Date().toISOString().split('T')[0]
+        const { data: intakeData, error: intakeError } = await supabase
+          .from('daily_intakes')
+          .select('*')
+          .eq('date', today)
+          .single()
+
+        if (!intakeError && intakeData) {
+          setIntake({
+            carbs: parseFloat(intakeData.carbs),
+            fat: parseFloat(intakeData.fat),
+            protein: parseFloat(intakeData.protein)
+          })
+        }
+      } catch (err) {
+        console.error('Error loading data:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadData()
     const timer = setInterval(() => setCurrentTime(new Date()), 1000)
     return () => clearInterval(timer)
   }, [])
+
+  // Save intake to Supabase whenever it changes
+  useEffect(() => {
+    const saveIntake = async () => {
+      const today = new Date().toISOString().split('T')[0]
+      const { error } = await supabase
+        .from('daily_intakes')
+        .upsert({
+          date: today,
+          carbs: intake.carbs,
+          fat: intake.fat,
+          protein: intake.protein,
+          updated_at: new Date().toISOString()
+        })
+
+      if (error) console.error('Error saving intake:', error)
+    }
+
+    const timeout = setTimeout(saveIntake, 1000) // Debounce saves
+    return () => clearTimeout(timeout)
+  }, [intake])
 
   const addFood = (e) => {
     e.preventDefault()
@@ -49,12 +108,11 @@ function App() {
     }))
   }
 
-  const saveNewFood = (e) => {
+  const saveNewFood = async (e) => {
     e.preventDefault()
     if (!newFood.name || !newFood.carbs || !newFood.fat || !newFood.protein) return
 
     const foodItem = {
-      id: Date.now(),
       name: newFood.name,
       carbs: parseFloat(newFood.carbs),
       fat: parseFloat(newFood.fat),
@@ -62,9 +120,18 @@ function App() {
       image: newFood.image || '🍽️'
     }
 
-    setQuickFoods(prev => [...prev, foodItem])
-    setNewFood({ name: '', carbs: '', fat: '', protein: '', image: '🍽️' })
-    setShowAddModal(false)
+    const { data, error } = await supabase
+      .from('foods')
+      .insert([foodItem])
+      .select()
+
+    if (!error && data) {
+      setQuickFoods(prev => [...prev, data[0]])
+      setNewFood({ name: '', carbs: '', fat: '', protein: '', image: '🍽️' })
+      setShowAddModal(false)
+    } else {
+      console.error('Error saving food:', error)
+    }
   }
 
   const resetDaily = () => {
